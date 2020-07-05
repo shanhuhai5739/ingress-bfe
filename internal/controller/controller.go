@@ -3,43 +3,37 @@ package controller
 import (
 	"io"
 	"sync"
-)
 
-import (
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/apimachinery/pkg/fields"
+	"github.com/baidu/ingress-bfe/internal/config"
+	"github.com/baidu/ingress-bfe/internal/pod"
+	"github.com/baidu/ingress-bfe/internal/store"
 	"k8s.io/api/networking/v1beta1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
 )
-
-import (
-	"github.com/baidu/ingress-bfe/internal/pod"
-	"github.com/baidu/ingress-bfe/internal/store"
-	"github.com/baidu/ingress-bfe/internal/config"
-)
-
 
 type BfeController struct {
 	config config.Configuration
 
 	kubeClient *kubernetes.Clientset
 
-	indexer        cache.Indexer
-	informer       cache.Controller
-	syncQueue      workqueue.RateLimitingInterface
-	resourceStore *store.Store
-	podInfo *pod.Info
-	once  sync.Once
-	stopCh chan struct{}
+	indexer       cache.Indexer
+	informer      cache.Controller
+	syncQueue     workqueue.RateLimitingInterface
+	resourceStore store.Store
+	podInfo       *pod.Info
+	once          sync.Once
+	stopCh        chan struct{}
 }
 
-func NewBfeController(kubeClient *kubernetes.Clientset,restClient rest.Interface, cfg config.Configuration) (controller *BfeController) {
+func NewBfeController(kubeClient *kubernetes.Clientset, restClient rest.Interface, cfg config.Configuration) (controller *BfeController) {
 	controller = &BfeController{
-		kubeClient:kubeClient,
-		config: cfg,
+		kubeClient: kubeClient,
+		config:     cfg,
 	}
 
 	podInfo, err := pod.GetPodDetails(kubeClient)
@@ -47,7 +41,6 @@ func NewBfeController(kubeClient *kubernetes.Clientset,restClient rest.Interface
 		klog.Exitf("Unexpected error obtaining pod information: %v", err)
 	}
 	controller.podInfo = podInfo
-
 
 	ingressListWatcher := cache.NewListWatchFromClient(restClient, "ingresses", cfg.Namespace, fields.Everything())
 	indexer, informer := cache.NewIndexerInformer(ingressListWatcher, &v1beta1.Ingress{}, 0, cache.ResourceEventHandlerFuncs{

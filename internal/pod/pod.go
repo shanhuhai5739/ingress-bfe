@@ -1,11 +1,10 @@
 package pod
 
 import (
+	"context"
 	"fmt"
 	"os"
-)
 
-import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -13,7 +12,7 @@ import (
 type Info struct {
 	Name      string
 	Namespace string
-	Labels map[string]string
+	Labels    map[string]string
 }
 
 func GetPodDetails(kubeClient *kubernetes.Clientset) (*Info, error) {
@@ -24,7 +23,7 @@ func GetPodDetails(kubeClient *kubernetes.Clientset) (*Info, error) {
 		return nil, fmt.Errorf("unable to get POD information (missing POD_NAME or POD_NAMESPACE environment variable")
 	}
 
-	pod, _ := kubeClient.CoreV1().Pods(podNs).Get(podName, metav1.GetOptions{})
+	pod, _ := kubeClient.CoreV1().Pods(podNs).Get(context.Background(), podName, metav1.GetOptions{})
 	if pod == nil {
 		return nil, fmt.Errorf("unable to get POD information")
 	}
