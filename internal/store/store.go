@@ -61,10 +61,11 @@ type Event struct {
 
 //Informer containts all required SharedIndexInformers
 type Informer struct {
-	Ingress  cache.SharedIndexInformer
-	Endpoint cache.SharedIndexInformer
-	Service  cache.SharedIndexInformer
-	Secret   cache.SharedIndexInformer
+	Ingress   cache.SharedIndexInformer
+	Endpoint  cache.SharedIndexInformer
+	Service   cache.SharedIndexInformer
+	Secret    cache.SharedIndexInformer
+	ConfigMap cache.SharedIndexInformer
 }
 
 //Run start informer
@@ -72,11 +73,13 @@ func (i *Informer) Run(stopCh chan struct{}) {
 	go i.Endpoint.Run(stopCh)
 	go i.Service.Run(stopCh)
 	go i.Secret.Run(stopCh)
+	go i.ConfigMap.Run(stopCh)
 
 	if !cache.WaitForCacheSync(stopCh,
 		i.Endpoint.HasSynced,
 		i.Service.HasSynced,
 		i.Secret.HasSynced,
+		i.ConfigMap.HasSynced,
 	) {
 		runtime.HandleError(fmt.Errorf("timeout waiting for caches to sync"))
 	}
@@ -93,11 +96,12 @@ func (i *Informer) Run(stopCh chan struct{}) {
 
 //Lister contains all required resource listers
 type Lister struct {
-	Ingress  IngressLister
-	Service  ServiceLister
-	Endpoint EndpointLister
-	Secret   SecretLister
-	Pod      PodLister
+	Ingress   IngressLister
+	Service   ServiceLister
+	Endpoint  EndpointLister
+	Secret    SecretLister
+	Pod       PodLister
+	ConfigMap ConfigMapLister
 }
 
 //K8sStore internal Storer implementation using informers and thread safe stores
@@ -120,7 +124,7 @@ func NewStore(
 	namespace string,
 	resycPeriod time.Duration,
 	updateCh *channels.RingChannel,
-) (store *K8sStore, err error) {
+) (store *K8sStore) {
 	store = &K8sStore{
 		informers:        &Informer{},
 		listers:          &Lister{},
@@ -173,7 +177,7 @@ func NewStore(
 	})
 
 	store.informers.Secret = informerFactory.Core().V1().Secrets().Informer()
-	store.listers.Secret.Store = store.informers.Service.GetStore()
+	store.listers.Secret.Store = store.informers.Secret.GetStore()
 	store.informers.Secret.AddEventHandler(&SecretResourceEventHandler{
 		store:    store,
 		recorder: recorder,
@@ -184,6 +188,13 @@ func NewStore(
 	store.informers.Service.AddEventHandler(&ServiceResourceEventHandler{
 		updateCh: store.updateCh,
 	})
+
+	store.informers.ConfigMap = informerFactory.Core().V1().ConfigMaps().Informer()
+	store.listers.ConfigMap.Store = store.informers.ConfigMap.GetStore()
+	store.informers.ConfigMap.AddEventHandler(&ConfigMapResourceEventHandler{
+		updateCh: store.updateCh,
+	})
+
 	return
 }
 

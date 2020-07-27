@@ -2,51 +2,41 @@ package bfe
 
 import (
 	"time"
-	"os"
-	"os/signal"
-	"syscall"
-)
 
-import (
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
-	"k8s.io/apimachinery/pkg/version"
-)
-
-import (
-	"github.com/baidu/ingress-bfe/internal/controller"
 )
 
 const (
-	defaultQPS = 1e6
+	defaultQPS   = 1e6
 	defaultBurst = 1e6
 )
 
-
 func main() {
-	cfg := parseFlags()
+	// 	cfg := parseFlags()
 
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	// 	signalChan := make(chan os.Signal, 1)
+	// 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 
-	kubeClient, err := createApiserverClient()
-	if err != nil {
-		klog.Exitf("Could not establish a connection to the Kubernetes API Server. err:%v", err)
-	}
+	// 	kubeClient, err := createApiserverClient()
+	// 	if err != nil {
+	// 		klog.Exitf("Could not establish a connection to the Kubernetes API Server. err:%v", err)
+	// 	}
 
-	restClient := kubeClient.NetworkingV1beta1().RESTClient()
-	c := controller.NewBfeController(kubeClient, restClient, cfg)
+	// 	restClient := kubeClient.NetworkingV1beta1().RESTClient()
+	// 	c := controller.NewBfeController(kubeClient, restClient, cfg)
 
-	stopCh := make(chan struct{}, 1)
-	go c.Run(stopCh)
+	// 	stopCh := make(chan struct{}, 1)
+	// 	go c.Run(stopCh)
 
-	<-signalChan
-	c.Exit()
+	// 	<-signalChan
+	// 	c.Exit()
+	// }
+
 }
-
-
 func createApiserverClient() (*kubernetes.Clientset, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", "")
 	if err != nil {

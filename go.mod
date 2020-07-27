@@ -7,6 +7,7 @@ require (
 	github.com/eapache/queue v1.1.0 // indirect
 	github.com/fullsailor/pkcs7 v0.0.0-20190404230743-d7302db945fa // indirect
 	github.com/imdario/mergo v0.3.9 // indirect
+	github.com/mitchellh/go-ps v1.0.0
 	github.com/pkg/errors v0.9.1
 	github.com/zakjan/cert-chain-resolver v0.0.0-20200409100953-fa92b0b5236f
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d // indirect
