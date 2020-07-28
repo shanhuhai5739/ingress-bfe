@@ -1,97 +1,147 @@
 package controller
 
 import (
-	"io"
-	"sync"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
 
+	"github.com/baidu/ingress-bfe/internal/bfe"
 	"github.com/baidu/ingress-bfe/internal/config"
-	"github.com/baidu/ingress-bfe/internal/pod"
+	"github.com/baidu/ingress-bfe/internal/queue"
 	"github.com/baidu/ingress-bfe/internal/store"
-	"k8s.io/api/networking/v1beta1"
-	"k8s.io/apimachinery/pkg/fields"
+	"github.com/eapache/channels"
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
+	"k8s.io/client-go/kubernetes/scheme"
+	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog"
 )
 
+const (
+	controllerName = "bfe-ingress-controller"
+)
+
 type BfeController struct {
-	config config.Configuration
-
-	kubeClient *kubernetes.Clientset
-
-	indexer       cache.Indexer
-	informer      cache.Controller
-	syncQueue     workqueue.RateLimitingInterface
-	resourceStore store.Store
-	podInfo       *pod.Info
-	once          sync.Once
-	stopCh        chan struct{}
+	config          config.Configuration
+	kubeClient      kubernetes.Interface
+	recorder        record.EventRecorder
+	syncQueue       *queue.Queue
+	stopCh          chan struct{}
+	updateCh        *channels.RingChannel
+	store           store.Store
+	isShuttiingDown bool
+	command         *bfe.Command
+	bfeErrCh        chan error
 }
 
-func NewBfeController(kubeClient *kubernetes.Clientset, restClient rest.Interface, cfg config.Configuration) (controller *BfeController) {
+func NewBfeController(kubeClient kubernetes.Interface, cfg config.Configuration) (controller *BfeController) {
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartLogging(klog.Infof)
+	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{
+		Interface: kubeClient.CoreV1().Events(cfg.Namespace),
+	})
 	controller = &BfeController{
 		kubeClient: kubeClient,
 		config:     cfg,
+		recorder: eventBroadcaster.NewRecorder(scheme.Scheme, apiv1.EventSource{
+			Component: controllerName,
+		}),
+		stopCh:   make(chan struct{}),
+		updateCh: channels.NewRingChannel(1024),
+		command:  bfe.NewCommand(),
 	}
+	controller.store = store.NewStore(kubeClient, cfg.Namespace, cfg.ResycPeriod, controller.updateCh)
 
-	podInfo, err := pod.GetPodDetails(kubeClient)
-	if err != nil {
-		klog.Exitf("Unexpected error obtaining pod information: %v", err)
-	}
-	controller.podInfo = podInfo
-
-	ingressListWatcher := cache.NewListWatchFromClient(restClient, "ingresses", cfg.Namespace, fields.Everything())
-	indexer, informer := cache.NewIndexerInformer(ingressListWatcher, &v1beta1.Ingress{}, 0, cache.ResourceEventHandlerFuncs{
-		AddFunc:    controller.onAdded,
-		UpdateFunc: controller.onUpdated,
-		DeleteFunc: controller.onDeleted,
-	}, cache.Indexers{})
-	controller.indexer = indexer
-	controller.informer = informer
-
-	controller.resourceStore, err = store.NewStore(controller.kubeClient, podInfo.Namespace, nil)
-	if err != nil {
-		klog.Exitf("Unexpected error store.NewStore: %v", err)
-	}
+	controller.syncQueue = queue.NewTaskQueue(controller.syncIngress)
 
 	return controller
 }
 
-func (b *BfeController) Run(stopCh chan struct{}) {
-	// TODO handle crash
-	// TODO informer run
-	// TODO reload
+//Run starts a new bfe controller master process running in the foreground
+func (b *BfeController) Run() {
+	klog.Info("Starting bfe ingress controller")
+
+	b.store.Run(b.stopCh)
+
+	//start bfe process
+	cmd := b.command.ExecCommand()
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Pgid:    0,
+	}
+	b.start(cmd)
+	go b.syncQueue.Run(time.Second, b.stopCh)
+
+	for {
+		select {
+		case err := <-b.bfeErrCh:
+			if b.isShuttiingDown {
+				return
+			}
+			if bfe.IsRespawnIfRequired(err) {
+				return
+			}
+		case event := <-b.updateCh.Out():
+			if b.isShuttiingDown {
+				break
+			}
+			if evt, ok := event.(store.Event); ok {
+				klog.V(3).Info("Event %v received - object %v", evt.Type, evt.Obj)
+				if evt.Type == store.ConfigurationEvent {
+					b.syncQueue.EnqueueTask(queue.GetDummyObject("configmap-change"))
+				}
+				b.syncQueue.EnqueueTask(evt.Obj)
+			} else {
+				klog.Warningf("Unexpected event type received %T", event)
+			}
+		case <-b.stopCh:
+			return
+		}
+
+	}
+
 }
 
-func (b *BfeController) Exit() {
-	b.once.Do(func() {
-		close(b.stopCh)
-	})
+func (b *BfeController) start(cmd *exec.Cmd) {
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		klog.Fatal("bfe start error:%v", err)
+		b.bfeErrCh <- err
+		return
+	}
+	go func() {
+		b.bfeErrCh <- cmd.Wait()
+	}()
 }
 
-func (b *BfeController) onLoadConfig(obj io.Reader) {
-	b.syncQueue.Add(LoadConfigAction{
-		config: obj,
-	})
+//Stop gracefully stops the bfe mastere process
+func (b *BfeController) Stop() error {
+	b.isShuttiingDown = true
+	if b.syncQueue.IsShuttingDown() {
+		return fmt.Errorf("shutdown already in progress")
+	}
+	klog.Info("Shutting down controller queues")
+	close(b.stopCh)
+	go b.syncQueue.Shutdown()
+
+	//send stop signal to bfe
+	klog.Info("Stopping bfe process")
+	if err := b.command.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		return err
+	}
+	//TODO wait for the bfe exit
+	b.command.Cmd.Wait()
+
+	return nil
 }
 
-func (b *BfeController) onAdded(obj interface{}) {
-	b.syncQueue.Add(AddedAction{
-		resource: obj,
-	})
-}
-
-func (b *BfeController) onUpdated(old interface{}, new interface{}) {
-	b.syncQueue.Add(UpdatedAction{
-		resource:    new,
-		oldResource: old,
-	})
-}
-
-func (b *BfeController) onDeleted(obj interface{}) {
-	b.syncQueue.Add(DeletedAction{
-		resource: obj,
-	})
+// syncIngress collects all the pieces required to assemble the NGINX
+// configuration file and passes the resulting data structures to the backend
+// (OnUpdate) when a reload is deemed necessary.
+func (n *BfeController) syncIngress(interface{}) error {
+	return nil
 }

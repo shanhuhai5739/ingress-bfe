@@ -1,8 +1,11 @@
 package config
 
+import "time"
+
 // Configuration contains all the settings required by an Ingress controller
 type Configuration struct {
-	Namespace string
+	Namespace   string
+	ResycPeriod time.Duration
 }
 
 // Config contains BFE config
@@ -11,7 +14,5 @@ type Config struct {
 }
 
 func NewConfig() *Config {
-	return &Config{
-
-	}
+	return &Config{}
 }
